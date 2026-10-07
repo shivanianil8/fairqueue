@@ -1,0 +1,13 @@
+{
+  "name": "fairqueue",
+  "version": "1.0.0",
+  "description": "FAIRQUEUE – Intelligent Queue Fairness Analyzer (Programming Paradigms / Logic Programming)",
+  "scripts": {
+    "start": "cd server && npm start",
+    "dev:server": "cd server && npm run dev",
+    "dev:client": "cd client && npm run dev",
+    "build": "cd client && npm run build",
+    "test:prolog": "cd server && node test_prolog.js",
+    "test:api": "cd server && node test_api.js"
+  }
+}

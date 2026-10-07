@@ -1,0 +1,19 @@
+{
+  "name": "fairqueue-server",
+  "version": "1.0.0",
+  "description": "FAIRQUEUE Backend API and Prolog Reasoning Engine",
+  "main": "server.js",
+  "type": "module",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch server.js",
+    "test:prolog": "node test_prolog.js"
+  },
+  "dependencies": {
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.7",
+    "express": "^4.21.2",
+    "mongoose": "^8.12.0",
+    "tau-prolog": "^0.3.4"
+  }
+}
