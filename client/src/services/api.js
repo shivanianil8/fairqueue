@@ -1,4 +1,4 @@
-const API_BASE = '/api';
+const API_BASE = import.meta.env.VITE_API_URL || '/api';
 
 // Persistent Bearer Token fallback (alongside HTTP-Only secure cookies)
 let authToken = typeof window !== 'undefined' ? localStorage.getItem('fairqueue_token') : null;
