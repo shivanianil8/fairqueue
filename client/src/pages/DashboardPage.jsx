@@ -26,28 +26,18 @@ export default function DashboardPage({
   onCallNext,
   currentUser,
 }) {
-  // Compute KPI numbers
-  const total = people.length;
-  let highCount = 0;
-  let mediumCount = 0;
-  let normalCount = 0;
-  let totalWait = 0;
-
-  people.forEach(p => {
-    if (p.priority === 'high') highCount++;
-    else if (p.priority === 'medium') mediumCount++;
-    else if (p.priority === 'normal') normalCount++;
-    totalWait += (p.waitingTime || 0);
-  });
-
-  const avgWait = total > 0 ? Math.round(totalWait / total) : 0;
-  const lastAnalyzedTime = latestAnalysis?.timestamp
-    ? new Date(latestAnalysis.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
-    : 'Not yet analyzed';
-
-  // Current recommended order
+  // Current recommended order (merges Prolog deduction with live status)
   const displayQueue = latestAnalysis?.rankedQueue?.length > 0
-    ? latestAnalysis.rankedQueue
+    ? latestAnalysis.rankedQueue.map(item => {
+        const match = people.find(p => p.personId === item.personId || p.entryId === item.entryId);
+        return {
+          ...item,
+          ...match,
+          priority: match?.isOverridden ? match.priority : item.priority,
+          rulesTriggered: match?.rulesTriggered?.length ? match.rulesTriggered : item.ruleCodes,
+          explanation: match?.explanation || item.explanation,
+        };
+      })
     : [...people].sort((a, b) => {
         const weights = { high: 3, medium: 2, normal: 1, unassigned: 0 };
         const diff = (weights[b.priority] || 0) - (weights[a.priority] || 0);
@@ -55,7 +45,27 @@ export default function DashboardPage({
         return (b.waitingTime || 0) - (a.waitingTime || 0);
       });
 
-  const topWaitingPerson = people.find(p => (p.status || 'WAITING') === 'WAITING' && (p.recommendedRank === 1 || displayQueue[0]?.personId === p.personId)) || displayQueue[0];
+  // Compute KPI numbers
+  const total = people.length;
+  let highCount = 0;
+  let mediumCount = 0;
+  let normalCount = 0;
+  let totalWait = 0;
+
+  displayQueue.forEach(p => {
+    const effPriority = (p.priority || 'unassigned').toLowerCase();
+    if (effPriority === 'high') highCount++;
+    else if (effPriority === 'medium') mediumCount++;
+    else if (effPriority === 'normal') normalCount++;
+    totalWait += (p.waitingTime || 0);
+  });
+
+  const avgWait = total > 0 ? Math.round(totalWait / total) : 0;
+  const lastAnalyzedTime = latestAnalysis?.timestamp
+    ? new Date(latestAnalysis.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+    : 'Real-time active';
+
+  const topWaitingPerson = displayQueue.find(p => (p.status || 'WAITING') === 'WAITING') || displayQueue[0];
 
   const engineName = systemStatus?.prologEngine?.swiplAvailable
     ? 'SWI-Prolog (Native)'
@@ -369,8 +379,8 @@ export default function DashboardPage({
                 <span className="text-slate-500">Rules triggered</span>
                 <span className="font-mono font-semibold text-slate-900">
                   {latestAnalysis?.rankedQueue
-                    ? latestAnalysis.rankedQueue.reduce((acc, p) => acc + (p.ruleCodes?.length || 0), 0)
-                    : 0}
+                    ? latestAnalysis.rankedQueue.reduce((acc, p) => acc + (p.ruleCodes?.length || p.rulesApplied?.length || p.rulesTriggered?.length || 0), 0)
+                    : displayQueue.reduce((acc, p) => acc + (p.ruleCodes?.length || p.rulesApplied?.length || p.rulesTriggered?.length || 0), 0)}
                 </span>
               </div>
 

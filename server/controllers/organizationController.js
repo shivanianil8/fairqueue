@@ -158,8 +158,9 @@ export const organizationController = {
       });
 
       const devInviteUrl = `/register?inviteToken=${inviteToken}&email=${encodeURIComponent(email.trim())}`;
+      const host = req.headers.host || `localhost:${process.env.PORT || 5050}`;
       console.log(`[Development Mode] Team Invitation Link for ${email}:`);
-      console.log(` -> http://localhost:5001${devInviteUrl}`);
+      console.log(` -> http://${host}${devInviteUrl}`);
 
       await auditService.log(
         { user: req.user, ip: req.ip, organizationId: req.organizationId },

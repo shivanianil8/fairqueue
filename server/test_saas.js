@@ -2,7 +2,7 @@
 // FAIRQUEUE SaaS End-to-End Automated Integration Verification Suite
 // ==============================================================================
 
-const BASE_URL = 'http://localhost:5001';
+const BASE_URL = process.env.BASE_URL || `http://localhost:${process.env.PORT || 5050}`;
 
 async function runTests() {
   console.log('\n================================================================');

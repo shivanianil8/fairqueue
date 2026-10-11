@@ -255,8 +255,8 @@ export const authController = {
         });
 
         devResetUrl = `/reset-password?token=${resetToken}`;
-        console.log(`[Development Mode] Password Reset Link for ${user.email}:`);
-        console.log(` -> http://localhost:5001${devResetUrl}`);
+        const host = req.headers.host || `localhost:${process.env.PORT || 5050}`;
+        console.log(` -> http://${host}${devResetUrl}`);
 
         await auditService.log(
           { user, ip: req.ip },

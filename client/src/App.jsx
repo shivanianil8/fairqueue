@@ -109,7 +109,25 @@ export default function App() {
       if (!selectedQueueId || !currentUser) return;
       try {
         const res = await api.getQueueEntries(selectedQueueId);
-        setPeople(res.data || []);
+        const currentEntries = res.data || [];
+        setPeople(currentEntries);
+
+        // Fetch latest analysis snapshot for this queue
+        const anlRes = await api.getAnalyses(selectedQueueId).catch(() => null);
+        if (anlRes && anlRes.data && anlRes.data.length > 0) {
+          setAnalyses(anlRes.data);
+          setLatestAnalysis(anlRes.data[0]);
+        } else if (currentEntries.length > 0) {
+          // If queue has visitors but no analysis record yet, run Prolog immediately
+          try {
+            const freshAnl = await api.analyzeQueue(selectedQueueId);
+            setLatestAnalysis(freshAnl);
+            const refPeople = await api.getQueueEntries(selectedQueueId);
+            setPeople(refPeople.data || []);
+          } catch (e) {
+            console.warn('Auto-analysis notice:', e.message);
+          }
+        }
       } catch (err) {
         console.warn('Queue entries loading notice:', err.message);
       }
@@ -295,7 +313,19 @@ export default function App() {
     const res = await api.createQueueEntry(selectedQueueId, personData);
     const pRes = await api.getQueueEntries(selectedQueueId);
     setPeople(pRes.data || []);
-    showToast(`Registered ${personData.name} in queue.`);
+    
+    // Refresh latest analysis
+    const aRes = await api.getAnalyses(selectedQueueId).catch(() => null);
+    if (aRes && aRes.data && aRes.data.length > 0) {
+      setAnalyses(aRes.data);
+      setLatestAnalysis(aRes.data[0]);
+    } else if (res.analysis) {
+      setLatestAnalysis(res.analysis);
+      setAnalyses([res.analysis]);
+    }
+
+    const priorityLabel = res.data?.priority ? ` [${res.data.priority.toUpperCase()}]` : '';
+    showToast(`Registered ${personData.name}${priorityLabel} in queue.`);
     return res;
   }
 

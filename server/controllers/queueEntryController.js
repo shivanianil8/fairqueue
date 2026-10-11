@@ -1,6 +1,72 @@
 import { dbService } from '../services/dbService.js';
 import { auditService } from '../services/auditService.js';
+import { prologService } from '../services/prologService.js';
 import { demoPeople } from '../data/demoData.js';
+
+// Auto-run Prolog Horn Clause Inference Engine on Queue Changes
+async function evaluateQueueWithProlog(queueId, organizationId) {
+  try {
+    const entries = await dbService.getQueueEntries(queueId, organizationId);
+    if (!entries || entries.length === 0) return null;
+
+    const ruleConfig = await dbService.getRuleConfig(queueId || 'default', organizationId);
+    const thresholds = {
+      criticalWait: ruleConfig.criticalWait,
+      longWait: ruleConfig.longWait,
+      vulnerableWait: ruleConfig.vulnerableWait,
+      moderateWait: ruleConfig.moderateWait,
+    };
+
+    const { rankedQueue, engineUsed, factsCode } = await prologService.analyzeQueue(entries, thresholds);
+
+    for (let i = 0; i < rankedQueue.length; i++) {
+      const item = rankedQueue[i];
+      await dbService.updatePersonPriority(
+        item.personId,
+        item.priority,
+        item.explanation,
+        item.ruleCodes || [],
+        i + 1,
+        organizationId
+      );
+    }
+
+    let highCount = 0;
+    let mediumCount = 0;
+    let normalCount = 0;
+    let totalWait = 0;
+    for (const p of rankedQueue) {
+      if (p.priority === 'high') highCount++;
+      else if (p.priority === 'medium') mediumCount++;
+      else normalCount++;
+      totalWait += p.waitingTime;
+    }
+    const avgWait = rankedQueue.length > 0 ? Math.round((totalWait / rankedQueue.length) * 10) / 10 : 0;
+
+    const analysisId = `anl-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
+    const savedAnalysis = await dbService.saveAnalysis({
+      analysisId,
+      organizationId,
+      queueId: queueId || 'all',
+      timestamp: new Date(),
+      totalPeople: rankedQueue.length,
+      highPriorityCount: highCount,
+      mediumPriorityCount: mediumCount,
+      normalPriorityCount: normalCount,
+      averageWaitTime: avgWait,
+      engineUsed,
+      thresholds,
+      rankedQueue,
+      prologFactsUsed: factsCode,
+      rawQuery: 'rank_all_people(RankedList).',
+    });
+
+    return savedAnalysis;
+  } catch (err) {
+    console.warn('[Prolog Auto-Evaluation Notice]', err.message);
+    return null;
+  }
+}
 
 export const queueEntryController = {
   // ---------------------------------------------------------------------------
@@ -9,7 +75,7 @@ export const queueEntryController = {
   async getEntries(req, res) {
     try {
       const { queueId } = req.params;
-      const { status } = req.query;
+      const status = req.query?.status;
       const organizationId = req.organizationId;
 
       const queue = await dbService.getQueueById(queueId, organizationId);
@@ -25,7 +91,15 @@ export const queueEntryController = {
         statusFilter = status.includes(',') ? status.split(',') : status;
       }
 
-      const entries = await dbService.getQueueEntries(queueId, organizationId, statusFilter);
+      let entries = await dbService.getQueueEntries(queueId, organizationId, statusFilter);
+
+      // Auto-evaluate with Prolog if any active entries are unassigned
+      const hasUnassigned = entries.some(e => !e.priority || e.priority === 'unassigned');
+      if (hasUnassigned && entries.length > 0) {
+        await evaluateQueueWithProlog(queueId, organizationId);
+        entries = await dbService.getQueueEntries(queueId, organizationId, statusFilter);
+      }
+
       res.json({
         success: true,
         queueId,
@@ -67,6 +141,12 @@ export const queueEntryController = {
         arrivalTime: arrivalTime && arrivalTime.trim() ? arrivalTime.trim() : '09:00',
       });
 
+      // Auto-evaluate queue with Prolog rules immediately
+      const autoAnalysis = await evaluateQueueWithProlog(queueId, organizationId);
+
+      // Fetch the updated entry with newly deduced priority, rules, and rank
+      const updatedEntry = (await dbService.getQueueEntryById(newEntry.entryId, organizationId)) || newEntry;
+
       await auditService.log(
         { user: req.user, ip: req.ip, organizationId },
         'ENTRY_REGISTERED',
@@ -76,13 +156,15 @@ export const queueEntryController = {
           name: newEntry.name,
           urgency: newEntry.urgency,
           appointmentStatus: newEntry.appointmentStatus,
+          deducedPriority: updatedEntry.priority,
         }
       );
 
       res.status(201).json({
         success: true,
-        message: `Registered '${newEntry.name}' (Ticket: ${newEntry.personId}) to queue.`,
-        data: newEntry,
+        message: `Registered '${updatedEntry.name}' (Ticket: ${updatedEntry.personId}) to queue with ${updatedEntry.priority.toUpperCase()} priority.`,
+        data: updatedEntry,
+        analysis: autoAnalysis,
       });
     } catch (err) {
       if (err.message && err.message.includes('already active')) {
@@ -293,17 +375,21 @@ export const queueEntryController = {
         }
       }
 
+      // Auto-evaluate seeded entries with Prolog
+      await evaluateQueueWithProlog(queueId, organizationId);
+      const evaluatedEntries = await dbService.getQueueEntries(queueId, organizationId);
+
       await auditService.log(
         { user: req.user, ip: req.ip, organizationId },
         'SAMPLE_DATA_LOADED',
         queueId,
-        { count: created.length }
+        { count: evaluatedEntries.length }
       );
 
       res.json({
         success: true,
-        message: `Loaded ${created.length} sample visitor records for testing rules.`,
-        data: created,
+        message: `Loaded ${created.length} sample visitor records with deductive Prolog priorities.`,
+        data: evaluatedEntries,
       });
     } catch (err) {
       res.status(500).json({ success: false, error: err.message });

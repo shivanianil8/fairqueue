@@ -136,12 +136,102 @@ function parseEvalTerm(evalTerm) {
   };
 }
 
+// Fallback embedded ISO Prolog Horn Clause knowledge base in case of sandbox/permission restrictions
+const EMBEDDED_FAIRQUEUE_PL = `
+:- dynamic(person/7).
+:- dynamic(threshold/2).
+
+threshold(critical_wait, 60).
+threshold(long_wait, 30).
+threshold(vulnerable_wait, 20).
+threshold(moderate_wait, 15).
+
+member(X, [X|_]).
+member(X, [_|Tail]) :- member(X, Tail).
+
+concat_atom_list([], '').
+concat_atom_list([X], AtomX) :- !, ( number(X) -> number_chars(X, Chars), atom_chars(AtomX, Chars) ; AtomX = X ).
+concat_atom_list([X|Xs], Result) :- concat_atom_list(Xs, Rest), ( number(X) -> number_chars(X, Chars), atom_chars(AtomX, Chars) ; AtomX = X ), atom_concat(AtomX, Rest, Result).
+
+rule_applies(Id, emergency_special_need, high, 'Emergency special need detected', 'Patient presents an immediate emergency condition requiring urgent clinical attention.') :- person(Id, _, _, _, _, emergency, _).
+rule_applies(Id, high_urgency_priority, high, 'High medical/operational urgency', 'Case is categorized as high urgency requiring expedited queue processing.') :- person(Id, _, _, high, _, Spec, _), Spec \\== emergency.
+rule_applies(Id, critical_wait_priority, high, 'Waiting time exceeded critical starvation threshold', Explanation) :- person(Id, _, Wait, _, _, _, _), threshold(critical_wait, T), Wait >= T, concat_atom_list(['Waiting time of ', Wait, ' min exceeds critical fairness limit of ', T, ' min.'], Explanation).
+rule_applies(Id, vulnerable_long_wait, high, 'Vulnerable individual with prolonged wait', Explanation) :- person(Id, _, Wait, _, _, Spec, _), (Spec == elderly ; Spec == disability), threshold(vulnerable_wait, T), Wait >= T, concat_atom_list(['Individual in vulnerable group (', Spec, ') has waited ', Wait, ' min (threshold: ', T, ' min).'], Explanation).
+rule_applies(Id, high_urgency_long_wait, high, 'High urgency combined with long wait', Explanation) :- person(Id, _, Wait, high, _, _, _), threshold(long_wait, T), Wait >= T, concat_atom_list(['High urgency case has accumulated ', Wait, ' min of wait time (>= ', T, ' min threshold).'], Explanation).
+rule_applies(Id, scheduled_sla_breach, high, 'Scheduled appointment waiting beyond SLA threshold', Explanation) :- person(Id, _, Wait, _, scheduled, _, _), threshold(long_wait, T), Wait >= T, concat_atom_list(['Scheduled appointment holder has waited ', Wait, ' min past appointment SLA limit of ', T, ' min.'], Explanation).
+rule_applies(Id, medium_urgency_wait, medium, 'Medium urgency with moderate wait time', Explanation) :- person(Id, _, Wait, medium, _, _, _), threshold(moderate_wait, T), Wait >= T, concat_atom_list(['Medium urgency patient has waited ', Wait, ' min (moderate threshold: ', T, ' min).'], Explanation).
+rule_applies(Id, scheduled_appointment_priority, medium, 'Confirmed scheduled appointment', 'Holds a confirmed appointment slot entitled to priority over standard unbooked walk-ins.') :- person(Id, _, _, _, scheduled, _, _).
+rule_applies(Id, vulnerable_group_protection, medium, 'Vulnerable group accommodation (elderly/disability)', Explanation) :- person(Id, _, _, _, _, Spec, _), (Spec == elderly ; Spec == disability), concat_atom_list(['Special accommodation granted for vulnerable group: ', Spec, '.'], Explanation).
+rule_applies(Id, moderate_wait_priority, medium, 'Moderate waiting time accumulated', Explanation) :- person(Id, _, Wait, _, _, _, _), threshold(moderate_wait, T), Wait >= T, concat_atom_list(['Person has waited ', Wait, ' min, reaching the moderate waiting threshold of ', T, ' min.'], Explanation).
+rule_applies(Id, normal_queue_progression, normal, 'Standard queue progression', 'Standard walk-in or recent arrival without elevated urgency or special requirements.') :- person(Id, _, _, _, _, _, _).
+
+priority_weight(high, 3).
+priority_weight(medium, 2).
+priority_weight(normal, 1).
+
+clean_duplicates([], []).
+clean_duplicates([H|T], Result) :- member(H, T), !, clean_duplicates(T, Result).
+clean_duplicates([H|T], [H|Result]) :- clean_duplicates(T, Result).
+
+find_all_rules_for_person(Id, Rules) :- findall(rule_entry(Code, Tier, Summary, Expl), rule_applies(Id, Code, Tier, Summary, Expl), RawRules), clean_duplicates(RawRules, Rules).
+
+deduce_priority(Rules, high) :- member(rule_entry(_, high, _, _), Rules), !.
+deduce_priority(Rules, medium) :- member(rule_entry(_, medium, _, _), Rules), !.
+deduce_priority(_, normal).
+
+synthesize_explanation(Name, high, Rules, Explanation) :- member(rule_entry(_, high, Summary, _), Rules), !, concat_atom_list([Name, ' was assigned HIGH priority because: ', Summary, '.'], Explanation).
+synthesize_explanation(Name, medium, Rules, Explanation) :- member(rule_entry(_, medium, Summary, _), Rules), !, concat_atom_list([Name, ' was assigned MEDIUM priority because: ', Summary, '.'], Explanation).
+synthesize_explanation(Name, normal, _, Explanation) :- concat_atom_list([Name, ' has NORMAL priority following standard first-come first-served queue progression.'], Explanation).
+
+evaluate_person(Id, Result) :- person(Id, Name, WaitTime, Urgency, Status, Special, Arrival), find_all_rules_for_person(Id, Rules), deduce_priority(Rules, Priority), priority_weight(Priority, Weight), synthesize_explanation(Name, Priority, Rules, SummaryExpl), extract_rule_codes(Rules, RuleCodes), extract_rule_summaries(Rules, RuleSummaries), Result = eval(Id, Name, WaitTime, Urgency, Status, Special, Arrival, Priority, Weight, RuleCodes, RuleSummaries, SummaryExpl).
+
+extract_rule_codes([], []).
+extract_rule_codes([rule_entry(Code, _, _, _) | Rest], [Code | RestCodes]) :- extract_rule_codes(Rest, RestCodes).
+
+extract_rule_summaries([], []).
+extract_rule_summaries([rule_entry(Code, Tier, Summary, Expl) | Rest], [r(Code, Tier, Summary, Expl) | RestSumms]) :- extract_rule_summaries(Rest, RestSumms).
+
+precedes(eval(_, NameA, _, _, _, _, _, PriA, WeightA, _, _, _), eval(_, NameB, _, _, _, _, _, PriB, WeightB, _, _, _), Reason) :- WeightA > WeightB, !, concat_atom_list([NameA, ' has higher priority (', PriA, ') than ', NameB, ' (', PriB, ').'], Reason).
+precedes(eval(_, NameA, WaitA, _, _, _, _, Pri, Weight, _, _, _), eval(_, NameB, WaitB, _, _, _, _, Pri, Weight, _, _, _), Reason) :- WaitA > WaitB, !, concat_atom_list(['Both have ', Pri, ' priority, but ', NameA, ' has waited longer (', WaitA, ' min vs ', WaitB, ' min).'], Reason).
+precedes(eval(_, NameA, Wait, _, _, _, ArrA, Pri, Weight, _, _, _), eval(_, NameB, Wait, _, _, _, ArrB, Pri, Weight, _, _, _), Reason) :- ArrA @< ArrB, !, concat_atom_list(['Both have ', Pri, ' priority and equal wait time (', Wait, ' min), but ', NameA, ' arrived earlier (', ArrA, ' vs ', ArrB, ').'], Reason).
+precedes(eval(IdA, NameA, Wait, _, _, _, Arr, Pri, Weight, _, _, _), eval(IdB, NameB, Wait, _, _, _, Arr, Pri, Weight, _, _, _), Reason) :- IdA @< IdB, concat_atom_list([NameA, ' precedes ', NameB, ' by deterministic identification ordering tie-breaker.'], Reason).
+
+compare_pair(IdA, IdB, WinnerId, LoserId, Reason) :- evaluate_person(IdA, EvalA), evaluate_person(IdB, EvalB), ( precedes(EvalA, EvalB, Reason) -> WinnerId = IdA, LoserId = IdB ; precedes(EvalB, EvalA, Reason), WinnerId = IdB, LoserId = IdA ).
+
+fair_insert(Eval, [], [Eval]).
+fair_insert(Eval, [Head | Rest], [Eval, Head | Rest]) :- precedes(Eval, Head, _), !.
+fair_insert(Eval, [Head | Rest], [Head | NewRest]) :- fair_insert(Eval, Rest, NewRest).
+
+fair_sort([], []).
+fair_sort([Head | Tail], Sorted) :- fair_sort(Tail, SortedTail), fair_insert(Head, SortedTail, Sorted).
+
+rank_all_people(RankedList) :- findall(Id, person(Id, _, _, _, _, _, _), AllIds), clean_duplicates(AllIds, UniqueIds), evaluate_all(UniqueIds, Evals), fair_sort(Evals, RankedList).
+
+evaluate_all([], []).
+evaluate_all([Id | RestIds], [Eval | RestEvals]) :- evaluate_person(Id, Eval), evaluate_all(RestIds, RestEvals).
+
+clear_facts :- retractall(person(_, _, _, _, _, _, _)).
+clear_thresholds :- retractall(threshold(_, _)).
+`;
+
+let cachedPrologSource = null;
+function getPrologSource() {
+  if (cachedPrologSource) return cachedPrologSource;
+  try {
+    cachedPrologSource = fs.readFileSync(PROLOG_FILE_PATH, 'utf8');
+    return cachedPrologSource;
+  } catch (err) {
+    cachedPrologSource = EMBEDDED_FAIRQUEUE_PL;
+    return cachedPrologSource;
+  }
+}
+
 // Execute analysis using embedded ISO Tau-Prolog session
 async function runAnalysisWithTauProlog(people, thresholds) {
   return new Promise((resolve, reject) => {
     try {
       const session = pl.create(10000);
-      const baseCode = fs.readFileSync(PROLOG_FILE_PATH, 'utf8');
+      const baseCode = getPrologSource();
 
       session.consult(baseCode, {
         success: () => {

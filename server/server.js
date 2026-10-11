@@ -1,6 +1,9 @@
 import express from 'express';
 import cors from 'cors';
 import dotenv from 'dotenv';
+import fs from 'fs';
+import path from 'path';
+import { fileURLToPath } from 'url';
 import { connectDB } from './config/db.js';
 import { dbService } from './services/dbService.js';
 import { demoPeople } from './data/demoData.js';
@@ -18,7 +21,10 @@ import reportRoutes from './routes/reportRoutes.js';
 import organizationRoutes from './routes/organizationRoutes.js';
 import { seedDemoEnvironment } from './data/demoSeed.js';
 
-dotenv.config();
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
+dotenv.config({ path: path.join(__dirname, '.env') });
 
 const app = express();
 const PORT = process.env.PORT || 5001;
@@ -77,15 +83,18 @@ app.use('/api/analyses', analysisRoutes);
 app.use('/api/rules', rulesRoutes);
 app.use('/api/status', statusRoutes);
 
-// Serve static frontend build if present
-import path from 'path';
-import { fileURLToPath } from 'url';
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
-const clientDistPath = path.join(__dirname, '..', 'client', 'dist');
+// Serve static frontend build from server/public or client/dist
+const distInServer = path.resolve(__dirname, 'public');
+const distInClient = path.resolve(__dirname, '..', 'client', 'dist');
 
-app.use(express.static(clientDistPath));
+if (fs.existsSync(distInServer)) {
+  app.use(express.static(distInServer));
+}
+if (fs.existsSync(distInClient)) {
+  app.use(express.static(distInClient));
+}
 
+// SPA fallback for all frontend routes (e.g. /, /login, /register, /dashboard)
 app.get('*', (req, res, next) => {
   if (req.originalUrl.startsWith('/api')) {
     return res.status(404).json({
@@ -93,9 +102,23 @@ app.get('*', (req, res, next) => {
       error: `API route '${req.method} ${req.originalUrl}' not found.`,
     });
   }
-  res.sendFile(path.join(clientDistPath, 'index.html'), (err) => {
-    if (err) next();
-  });
+
+  const indexPath = fs.existsSync(path.join(distInServer, 'index.html'))
+    ? path.join(distInServer, 'index.html')
+    : path.join(distInClient, 'index.html');
+
+  if (fs.existsSync(indexPath)) {
+    return res.sendFile(indexPath, (err) => {
+      if (err) {
+        console.error('[Static Error] Failed to serve index.html:', err.message);
+        if (!res.headersSent) {
+          res.status(500).send('Error loading FAIRQUEUE application.');
+        }
+      }
+    });
+  }
+
+  res.status(404).send('FAIRQUEUE client build not found. Please run `npm run build` in the client directory.');
 });
 
 // Global Error Handler
